@@ -31,14 +31,8 @@ def send_telegram_direct(message):
     try:
         config = get_config()
         
-        logger.info(f"Telegram 配置检查 - Token: {'*' * 10 if config['telegram_token'] else '未设置'}, Chat ID: {config['telegram_chat_id']}")
-        
-        if not config['telegram_token']:
-            logger.error("Telegram Token 未设置")
-            return False
-        
-        if not config['telegram_chat_id']:
-            logger.error("Telegram Chat ID 未设置")
+        if not config['telegram_token'] or not config['telegram_chat_id']:
+            logger.warning("Telegram 配置不完整")
             return False
         
         # 简化消息内容
@@ -62,17 +56,15 @@ def send_telegram_direct(message):
             'disable_web_page_preview': True
         }
         
-        logger.info("开始发送 Telegram 消息...")
+        logger.info(f"发送 Telegram 消息，长度: {len(message)}")
         
         # 发送请求
         response = requests.post(
             url,
             data=data,
             proxies=proxies,
-            timeout=15
+            timeout=10
         )
-        
-        logger.info(f"Telegram API 响应状态: {response.status_code}")
         
         if response.status_code == 200:
             result = response.json()
@@ -80,21 +72,17 @@ def send_telegram_direct(message):
                 logger.info(f"✅ Telegram 消息发送成功！消息ID: {result['result']['message_id']}")
                 return True
             else:
-                error_desc = result.get('description', 'Unknown error')
-                logger.error(f"Telegram API 错误: {error_desc}")
+                logger.error(f"Telegram API 错误: {result.get('description')}")
                 return False
         else:
-            logger.error(f"HTTP 错误 {response.status_code}: {response.text}")
+            logger.error(f"HTTP 错误: {response.status_code} - {response.text}")
             return False
             
     except requests.exceptions.Timeout:
         logger.warning("⚠️ Telegram 发送超时")
         return False
-    except requests.exceptions.ProxyError as e:
-        logger.error(f"❌ 代理错误: {e}")
-        return False
     except Exception as e:
-        logger.error(f"❌ Telegram 发送失败: {str(e)}")
+        logger.error(f"❌ Telegram 发送失败: {e}")
         return False
 
 def send_telegram_async(message):
@@ -105,47 +93,184 @@ def send_telegram_async(message):
     def _send():
         try:
             success = send_telegram_direct(message)
-            if success:
-                logger.info("✅ 异步 Telegram 发送成功")
-            else:
-                logger.warning("❌ 异步 Telegram 发送失败")
+            logger.info(f"异步发送结果: {success}")
         except Exception as e:
             logger.error(f"异步发送异常: {e}")
     
     _executor.submit(_send)
 
 def generate_simple_message(data):
-    """生成简化消息"""
+    """生成友好的消息格式 - 支持所有 Emby 事件类型"""
     event_type = data.get("Event", "Unknown")
+    item = data.get("Item", {})
+    user = data.get("User", {})
+    server = data.get("Server", {})
     
+    item_name = item.get("Name", "Unknown")
+    item_type = item.get("Type", "Unknown")
+    user_name = user.get("Name", "Unknown")
+    server_name = server.get("Name", "Emby Server")
+    
+    # 根据事件类型生成不同的消息
     if event_type == "library.new":
-        item = data.get("Item", {})
-        item_type = item.get("Type", "Unknown")
-        item_name = item.get("Name", "Unknown")
-        
         if item_type == "Movie":
             year = item.get("ProductionYear", "")
             year_str = f" ({year})" if year else ""
-            return f"🎬 <b>新电影添加</b>\n\n{item_name}{year_str}"
-            
+            return f"🎬 <b>新电影添加</b>\n\n{item_name}{year_str}\n🏠 {server_name}"
         elif item_type == "Episode":
             series_name = item.get("SeriesName", "Unknown")
             season = item.get("ParentIndexNumber", "")
             episode = item.get("IndexNumber", "")
-            return f"📺 <b>新剧集更新</b>\n\n{series_name}\nS{season}E{episode} - {item_name}"
+            return f"📺 <b>新剧集更新</b>\n\n{series_name}\nS{season}E{episode} - {item_name}\n🏠 {server_name}"
         else:
-            return f"📦 <b>新内容</b>\n\n{item_name} ({item_type})"
+            return f"📦 <b>新内容添加</b>\n\n{item_name} ({item_type})\n🏠 {server_name}"
     
-    elif event_type in ["system.webhooktest", "system.notificationtest"]:
-        return "🔔 <b>测试通知</b>\n\nEmby Webhook 服务正常运行！"
-    
+    # 播放相关事件
     elif event_type == "playback.start":
-        item = data.get("Item", {})
-        user = data.get("User", {})
-        return f"▶️ <b>开始播放</b>\n\n{item.get('Name', 'Unknown')}\n👤 {user.get('Name', 'Unknown')}"
+        if item_type == "Movie":
+            return f"▶️ <b>开始播放电影</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+        elif item_type == "Episode":
+            series_name = item.get("SeriesName", "Unknown")
+            return f"▶️ <b>开始播放剧集</b>\n\n{series_name} - {item_name}\n👤 {user_name}\n🏠 {server_name}"
+        else:
+            return f"▶️ <b>开始播放</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
     
+    elif event_type == "playback.unpause":
+        if item_type == "Movie":
+            return f"⏯️ <b>恢复播放电影</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+        elif item_type == "Episode":
+            series_name = item.get("SeriesName", "Unknown")
+            return f"⏯️ <b>恢复播放剧集</b>\n\n{series_name} - {item_name}\n👤 {user_name}\n🏠 {server_name}"
+        else:
+            return f"⏯️ <b>恢复播放</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "playback.pause":
+        if item_type == "Movie":
+            return f"⏸️ <b>暂停播放电影</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+        elif item_type == "Episode":
+            series_name = item.get("SeriesName", "Unknown")
+            return f"⏸️ <b>暂停播放剧集</b>\n\n{series_name} - {item_name}\n👤 {user_name}\n🏠 {server_name}"
+        else:
+            return f"⏸️ <b>暂停播放</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "playback.stop":
+        if item_type == "Movie":
+            return f"⏹️ <b>停止播放电影</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+        elif item_type == "Episode":
+            series_name = item.get("SeriesName", "Unknown")
+            return f"⏹️ <b>停止播放剧集</b>\n\n{series_name} - {item_name}\n👤 {user_name}\n🏠 {server_name}"
+        else:
+            return f"⏹️ <b>停止播放</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+    
+    # 用户相关事件
+    elif event_type == "user.authenticated":
+        return f"🔐 <b>用户登录</b>\n\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "user.lockedout":
+        return f"🚫 <b>用户锁定</b>\n\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "user.deleted":
+        return f"🗑️ <b>用户删除</b>\n\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "user.passwordchanged":
+        return f"🔑 <b>密码更改</b>\n\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "user.updated":
+        return f"👤 <b>用户信息更新</b>\n\n{user_name}\n🏠 {server_name}"
+    
+    # 系统事件
+    elif event_type == "system.webhooktest":
+        return "🔔 <b>Webhook 测试</b>\n\nEmby Webhook 服务正常运行！"
+    
+    elif event_type == "system.notificationtest":
+        return "🔔 <b>通知测试</b>\n\nEmby 通知系统测试成功！"
+    
+    elif event_type == "system.taskcompleted":
+        task_name = data.get("Name", "Unknown Task")
+        return f"⚙️ <b>任务完成</b>\n\n{task_name}\n🏠 {server_name}"
+    
+    elif event_type == "system.plugininstalled":
+        plugin_name = data.get("Name", "Unknown Plugin")
+        return f"🔌 <b>插件安装</b>\n\n{plugin_name}\n🏠 {server_name}"
+    
+    elif event_type == "system.pluginuninstalled":
+        plugin_name = data.get("Name", "Unknown Plugin")
+        return f"🔌 <b>插件卸载</b>\n\n{plugin_name}\n🏠 {server_name}"
+    
+    elif event_type == "system.pluginupdated":
+        plugin_name = data.get("Name", "Unknown Plugin")
+        return f"🔌 <b>插件更新</b>\n\n{plugin_name}\n🏠 {server_name}"
+    
+    elif event_type == "system.updated":
+        return f"🔄 <b>系统更新</b>\n\nEmby 服务器已更新\n🏠 {server_name}"
+    
+    elif event_type == "system.restarting":
+        return f"🔄 <b>系统重启</b>\n\nEmby 服务器正在重启\n🏠 {server_name}"
+    
+    elif event_type == "system.shuttingdown":
+        return f"🔌 <b>系统关机</b>\n\nEmby 服务器正在关机\n🏠 {server_name}"
+    
+    # 媒体库事件
+    elif event_type == "library.changed":
+        return f"📚 <b>媒体库变更</b>\n\n媒体库内容已更新\n🏠 {server_name}"
+    
+    elif event_type == "library.refreshed":
+        return f"🔄 <b>媒体库刷新</b>\n\n媒体库刷新完成\n🏠 {server_name}"
+    
+    elif event_type == "library.updated":
+        return f"📚 <b>媒体库更新</b>\n\n媒体库信息已更新\n🏠 {server_name}"
+    
+    # 认证事件
+    elif event_type == "authentication.succeeded":
+        return f"✅ <b>认证成功</b>\n\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "authentication.failed":
+        username = data.get("Username", "Unknown")
+        return f"❌ <b>认证失败</b>\n\n用户: {username}\n🏠 {server_name}"
+    
+    elif event_type == "authentication.credentialsinvalid":
+        username = data.get("Username", "Unknown")
+        return f"❌ <b>凭据无效</b>\n\n用户: {username}\n🏠 {server_name}"
+    
+    # 会话事件
+    elif event_type == "session.start":
+        device = data.get("DeviceName", "Unknown Device")
+        return f"📱 <b>会话开始</b>\n\n👤 {user_name}\n📱 {device}\n🏠 {server_name}"
+    
+    elif event_type == "session.end":
+        device = data.get("DeviceName", "Unknown Device")
+        return f"📱 <b>会话结束</b>\n\n👤 {user_name}\n📱 {device}\n🏠 {server_name}"
+    
+    # 转码事件
+    elif event_type == "transcode.start":
+        return f"🎥 <b>开始转码</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "transcode.end":
+        return f"🎥 <b>转码完成</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+    
+    elif event_type == "transcode.failed":
+        return f"❌ <b>转码失败</b>\n\n{item_name}\n👤 {user_name}\n🏠 {server_name}"
+    
+    # 定时任务事件
+    elif event_type == "scheduledtask.start":
+        task_name = data.get("Name", "Unknown Task")
+        return f"⏰ <b>定时任务开始</b>\n\n{task_name}\n🏠 {server_name}"
+    
+    elif event_type == "scheduledtask.ended":
+        task_name = data.get("Name", "Unknown Task")
+        return f"⏰ <b>定时任务完成</b>\n\n{task_name}\n🏠 {server_name}"
+    
+    # 网络事件
+    elif event_type == "network.connectionlost":
+        return f"📡 <b>网络连接丢失</b>\n\n🏠 {server_name}"
+    
+    elif event_type == "network.connectionrestored":
+        return f"📡 <b>网络连接恢复</b>\n\n🏠 {server_name}"
+    
+    # 默认情况
     else:
-        return f"📢 <b>{event_type}</b>\n\n事件已记录"
+        # 对于未知事件，提供更详细的信息
+        return f"📢 <b>{event_type}</b>\n\n内容: {item_name}\n类型: {item_type}\n用户: {user_name}\n服务器: {server_name}"
 
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
@@ -159,13 +284,13 @@ def handle_webhook():
             data = json.loads(raw_data) if raw_data else {}
         
         event_type = data.get("Event", "Unknown")
-        logger.info(f"处理 Webhook 事件: {event_type}")
+        logger.info(f"处理事件: {event_type}")
         
         # 异步记录到文件
         def _log_to_file():
             try:
                 with open('/app/data/webhook.log', 'a') as f:
-                    f.write(json.dumps(data, ensure_ascii=False) + '\n')
+                    f.write(json.dumps(data, ensure_ascii=False, separators=(',', ':')) + '\n')
             except:
                 pass
         
@@ -199,7 +324,7 @@ def health_check():
 @app.route('/test-telegram', methods=['GET'])
 def test_telegram():
     """测试 Telegram 发送"""
-    message = "🧪 <b>直接 API 测试</b>\n\n如果收到此消息，说明直接 HTTP API 工作正常！"
+    message = "🧪 <b>完整事件测试</b>\n\nEmby Webhook 服务支持所有事件类型！"
     success = send_telegram_direct(message)
     return jsonify({
         "success": success, 
@@ -211,5 +336,5 @@ def test_telegram():
     })
 
 if __name__ == '__main__':
-    logger.info("启动直接环境变量版本的 Emby Webhooks...")
+    logger.info("启动完整事件支持的 Emby Webhooks...")
     app.run(host='0.0.0.0', port=3000, debug=False, threaded=True)

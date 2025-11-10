@@ -133,3 +133,7 @@ dmypy.json
 
 # test files
 test.*
+
+# 防止乱码文件
+*#
+*#*
